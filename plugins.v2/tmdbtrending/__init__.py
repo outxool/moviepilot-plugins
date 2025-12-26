@@ -1,5 +1,5 @@
 # 强制打印日志
-print("加载 TmdbTrending 插件模块 (v1.2.0)...")
+print("加载 TmdbTrending 插件模块 (v1.2.1)...")
 
 import datetime
 from threading import Thread
@@ -7,6 +7,8 @@ from typing import Tuple, List, Dict, Any
 
 from apscheduler.triggers.cron import CronTrigger
 
+# 引入 DownloadChain 用于检测媒体库是否已存在
+from app.chain.download import DownloadChain
 from app.chain.subscribe import SubscribeChain
 from app.core.config import settings
 from app.core.context import MediaInfo
@@ -26,7 +28,7 @@ class TmdbTrending(_PluginBase):
     plugin_name = "TMDB趋势订阅"
     plugin_desc = "订阅 TMDB 趋势、热映、热门、高分及指定分类榜单，支持多榜单并发、年份过滤与去重。"
     plugin_icon = "https://www.themoviedb.org/assets/2/v4/logos/v2/blue_square_2-d537fb228cf3ded904ef09b136fe3fec72548ebc1fea3fbbd1ad9e36364db38b.svg"
-    plugin_version = "1.2.0"
+    plugin_version = "1.2.1"
     plugin_author = "MoviePilot-Plugins"
     plugin_config_prefix = "tmdbtrending_"
     plugin_order = 10
@@ -34,6 +36,7 @@ class TmdbTrending(_PluginBase):
 
     # 私有属性
     subscribechain: SubscribeChain = None
+    downloadchain: DownloadChain = None
     
     # 全局配置
     _enabled = False
@@ -45,16 +48,16 @@ class TmdbTrending(_PluginBase):
     
     # 电影配置
     _movie_enabled = False
-    _movie_sources = ["trending_day"] # 改为列表
-    _movie_genres = [] # 改为列表
+    _movie_sources = ["trending_day"]
+    _movie_genres = []
     _movie_min_vote = 7.0
     _movie_min_year = 0
     _movie_count = 10
     
     # 电视剧配置
     _tv_enabled = False
-    _tv_sources = ["trending_week"] # 改为列表
-    _tv_genres = [] # 改为列表
+    _tv_sources = ["trending_week"]
+    _tv_genres = []
     _tv_min_vote = 7.5
     _tv_min_year = 0
     _tv_count = 10
@@ -69,6 +72,7 @@ class TmdbTrending(_PluginBase):
     def init_plugin(self, config: dict = None):
         logger.info("正在初始化 TMDB 趋势订阅插件...")
         self.subscribechain = SubscribeChain()
+        self.downloadchain = DownloadChain()
         
         if config:
             self._enabled = config.get("enabled", False)
@@ -373,14 +377,12 @@ class TmdbTrending(_PluginBase):
         
         # 1. 处理电影
         if self._movie_enabled:
-            # 兼容处理：确保是列表
             sources = self._movie_sources if isinstance(self._movie_sources, list) else [self._movie_sources]
             genres = self._movie_genres if isinstance(self._movie_genres, list) else []
 
             for src in sources:
                 if src == 'discover':
-                    # 如果选了 Discover，遍历所有选中的分类
-                    target_genres = genres if genres else [""] # 如果没选分类，传空串拉取默认发现
+                    target_genres = genres if genres else [""] 
                     for genre_id in target_genres:
                         added_list.extend(self.__fetch_and_process(
                             media_type=MediaType.MOVIE,
@@ -392,7 +394,6 @@ class TmdbTrending(_PluginBase):
                             category_label="电影"
                         ))
                 else:
-                    # 其他榜单直接拉取
                     added_list.extend(self.__fetch_and_process(
                         media_type=MediaType.MOVIE,
                         source=src,
@@ -491,7 +492,6 @@ class TmdbTrending(_PluginBase):
         results = []
         page = 1
         
-        # 循环翻页直到满足 limit (注意：对于Discovery+多分类的情况，这里的limit是针对【每个分类】的)
         while len(results) < limit and page <= 5:
             try:
                 # 拼接 page 参数
@@ -533,11 +533,11 @@ class TmdbTrending(_PluginBase):
                         if not (16 in genre_ids and ('JP' in origin_country or lang == 'ja')):
                             continue
                     
-                    # 去重
+                    # 去重 (插件历史)
                     unique_key = f"{category_label}:{tmdb_id}"
                     if self.__is_processed(unique_key): continue
                     
-                    # 添加订阅
+                    # 添加订阅 (核心：MP重复检测 & 媒体库检测)
                     if self.__add_subscribe(title, year, media_type, tmdb_id, category_label):
                         # 如果是 Discovery，记录具体的分类来源
                         display_source = source
@@ -572,9 +572,17 @@ class TmdbTrending(_PluginBase):
             mediainfo.type = mtype
             mediainfo.tmdb_id = int(tmdb_id)
             
+            # 1. 检查订阅表 (Subscription Table)
             if self.subscribechain.exists(mediainfo=mediainfo, meta=meta):
                 return False
                 
+            # 2. 检查媒体库 (Library / Completed Downloads)
+            exist_flag, _ = self.downloadchain.get_no_exists_info(meta=meta, mediainfo=mediainfo)
+            if exist_flag:
+                logger.info(f"[{category_name}] 媒体库已存在: {title}，跳过")
+                return False
+
+            # 3. 添加订阅
             self.subscribechain.add(title=title, year=year, mtype=mtype, tmdbid=int(tmdb_id), season=None, username="TMDB趋势插件")
             logger.info(f"[{category_name}] 订阅成功: {title}")
             return True
