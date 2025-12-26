@@ -2,7 +2,6 @@
     "TMDbTrendingSub": {
         "name": "TMDB趋势订阅",
         "release": false,
-        "branch": main,
         "description": "自动订阅TMDB热门/趋势的电影、电视剧、动画等内容",
         "labels": "订阅,TMDB,电影,电视剧,动画",
         "version": "1.0.0",
@@ -15,4 +14,5 @@
     }
 
 }
+
 
