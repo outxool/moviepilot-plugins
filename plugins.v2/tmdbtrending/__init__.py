@@ -1,5 +1,5 @@
-# 强制打印日志，证明文件被系统加载
-print("加载 TmdbTrending 插件模块...")
+# 强制打印日志
+print("加载 TmdbTrending 插件模块 (v1.1.0)...")
 
 import datetime
 from threading import Thread
@@ -24,9 +24,9 @@ except ImportError:
 class TmdbTrending(_PluginBase):
     # 插件基本信息
     plugin_name = "TMDB趋势订阅"
-    plugin_desc = "自动订阅 TMDB 热门趋势（电影/电视剧/动漫），支持评分过滤与消息通知。"
+    plugin_desc = "订阅 TMDB 趋势、热映、热门、高分及指定分类榜单，支持去重与通知。"
     plugin_icon = "https://www.themoviedb.org/assets/2/v4/logos/v2/blue_square_2-d537fb228cf3ded904ef09b136fe3fec72548ebc1fea3fbbd1ad9e36364db38b.svg"
-    plugin_version = "1.0.7"
+    plugin_version = "1.1.0"
     plugin_author = "MoviePilot-Plugins"
     plugin_config_prefix = "tmdbtrending_"
     plugin_order = 10
@@ -35,7 +35,7 @@ class TmdbTrending(_PluginBase):
     # 私有属性
     subscribechain: SubscribeChain = None
     
-    # 配置属性
+    # 全局配置
     _enabled = False
     _cron = "0 10 * * *"
     _notify = True
@@ -45,26 +45,25 @@ class TmdbTrending(_PluginBase):
     
     # 电影配置
     _movie_enabled = False
-    _movie_window = "day"
+    _movie_source = "trending_day"
+    _movie_genre_id = ""
     _movie_min_vote = 7.0
     _movie_count = 10
     
     # 电视剧配置
     _tv_enabled = False
-    _tv_window = "week"
+    _tv_source = "trending_week"
+    _tv_genre_id = ""
     _tv_min_vote = 7.5
     _tv_count = 10
     
-    # 动漫配置
+    # 动漫配置 (独立预设)
     _anime_enabled = False
     _anime_window = "week"
     _anime_min_vote = 7.0
     _anime_count = 10
 
     def init_plugin(self, config: dict = None):
-        """
-        插件初始化
-        """
         logger.info("正在初始化 TMDB 趋势订阅插件...")
         self.subscribechain = SubscribeChain()
         
@@ -76,32 +75,32 @@ class TmdbTrending(_PluginBase):
             self._clear_history = config.get("clear_history", False)
             self._tmdb_api_key = config.get("tmdb_api_key", "")
             
+            # 电影
             self._movie_enabled = config.get("movie_enabled", False)
-            self._movie_window = config.get("movie_window", "day")
+            self._movie_source = config.get("movie_source", "trending_day")
+            self._movie_genre_id = config.get("movie_genre_id", "")
             self._movie_min_vote = float(config.get("movie_min_vote", 7.0))
             self._movie_count = int(config.get("movie_count", 10))
             
+            # 电视剧
             self._tv_enabled = config.get("tv_enabled", False)
-            self._tv_window = config.get("tv_window", "week")
+            self._tv_source = config.get("tv_source", "trending_week")
+            self._tv_genre_id = config.get("tv_genre_id", "")
             self._tv_min_vote = float(config.get("tv_min_vote", 7.5))
             self._tv_count = int(config.get("tv_count", 10))
             
+            # 动漫
             self._anime_enabled = config.get("anime_enabled", False)
             self._anime_window = config.get("anime_window", "week")
             self._anime_min_vote = float(config.get("anime_min_vote", 7.0))
             self._anime_count = int(config.get("anime_count", 10))
 
-        # 执行一次性操作
         self.__execute_once_operations()
 
     def __execute_once_operations(self):
-        """
-        执行清理历史或立即运行的操作，并重置开关
-        """
         config_updated = False
         update_dict = {}
 
-        # 1. 清除历史记录
         if self._clear_history:
             logger.info("TMDB趋势订阅：正在清除历史记录...")
             self.save_data('history', [])
@@ -110,7 +109,6 @@ class TmdbTrending(_PluginBase):
             config_updated = True
             logger.info("TMDB趋势订阅：历史记录已清除。")
 
-        # 2. 立即运行一次 (使用线程防止阻塞保存)
         if self._onlyonce:
             logger.info("TMDB趋势订阅：检测到“立即运行”指令，正在后台启动任务...")
             Thread(target=self.sync_tmdb_trends).start()
@@ -118,7 +116,6 @@ class TmdbTrending(_PluginBase):
             update_dict["onlyonce"] = False
             config_updated = True
         
-        # 3. 如果有变更，回写配置
         if config_updated:
             self.update_config(update_dict)
 
@@ -133,9 +130,6 @@ class TmdbTrending(_PluginBase):
         return []
 
     def get_service(self) -> List[Dict[str, Any]]:
-        """
-        注册定时服务
-        """
         if self._enabled and self._cron:
             return [{
                 "id": "TmdbTrending",
@@ -147,6 +141,26 @@ class TmdbTrending(_PluginBase):
         return []
 
     def get_form(self) -> Tuple[List[dict], Dict[str, Any]]:
+        # 数据源选项
+        movie_sources = [
+            {'title': '今日趋势 (Trending Day)', 'value': 'trending_day'},
+            {'title': '本周趋势 (Trending Week)', 'value': 'trending_week'},
+            {'title': '正在热映 (Now Playing)', 'value': 'now_playing'},
+            {'title': '热门电影 (Popular)', 'value': 'popular'},
+            {'title': '高分电影 (Top Rated)', 'value': 'top_rated'},
+            {'title': '按分类发现 (Discovery)', 'value': 'discover'},
+        ]
+        
+        tv_sources = [
+            {'title': '今日趋势 (Trending Day)', 'value': 'trending_day'},
+            {'title': '本周趋势 (Trending Week)', 'value': 'trending_week'},
+            {'title': '正在热播 (Airing Today)', 'value': 'airing_today'},
+            {'title': '即将播出 (On The Air)', 'value': 'on_the_air'},
+            {'title': '热门剧集 (Popular)', 'value': 'popular'},
+            {'title': '高分剧集 (Top Rated)', 'value': 'top_rated'},
+            {'title': '按分类发现 (Discovery)', 'value': 'discover'},
+        ]
+
         return [
             {
                 'component': 'VForm',
@@ -189,10 +203,11 @@ class TmdbTrending(_PluginBase):
                     {
                         'component': 'VRow',
                         'content': [
-                            {'component': 'VCol', 'props': {'cols': 12, 'md': 3}, 'content': [{'component': 'VSwitch', 'props': {'model': 'movie_enabled', 'label': '启用'}}]},
-                            {'component': 'VCol', 'props': {'cols': 12, 'md': 3}, 'content': [{'component': 'VSelect', 'props': {'model': 'movie_window', 'label': '周期', 'items': [{'title': '今日', 'value': 'day'}, {'title': '本周', 'value': 'week'}]}}]},
-                            {'component': 'VCol', 'props': {'cols': 12, 'md': 3}, 'content': [{'component': 'VTextField', 'props': {'model': 'movie_min_vote', 'label': '最低分', 'type': 'number'}}]},
-                            {'component': 'VCol', 'props': {'cols': 12, 'md': 3}, 'content': [{'component': 'VTextField', 'props': {'model': 'movie_count', 'label': '数量', 'type': 'number'}}]}
+                            {'component': 'VCol', 'props': {'cols': 12, 'md': 2}, 'content': [{'component': 'VSwitch', 'props': {'model': 'movie_enabled', 'label': '启用'}}]},
+                            {'component': 'VCol', 'props': {'cols': 12, 'md': 4}, 'content': [{'component': 'VSelect', 'props': {'model': 'movie_source', 'label': '榜单来源', 'items': movie_sources}}]},
+                            {'component': 'VCol', 'props': {'cols': 12, 'md': 2}, 'content': [{'component': 'VTextField', 'props': {'model': 'movie_min_vote', 'label': '最低分', 'type': 'number'}}]},
+                            {'component': 'VCol', 'props': {'cols': 12, 'md': 2}, 'content': [{'component': 'VTextField', 'props': {'model': 'movie_count', 'label': '数量', 'type': 'number'}}]},
+                            {'component': 'VCol', 'props': {'cols': 12, 'md': 2}, 'content': [{'component': 'VTextField', 'props': {'model': 'movie_genre_id', 'label': '分类ID(Discovery必填)', 'placeholder': '如 878'}}]}
                         ]
                     },
                     # 电视剧配置
@@ -200,19 +215,20 @@ class TmdbTrending(_PluginBase):
                     {
                         'component': 'VRow',
                         'content': [
-                            {'component': 'VCol', 'props': {'cols': 12, 'md': 3}, 'content': [{'component': 'VSwitch', 'props': {'model': 'tv_enabled', 'label': '启用'}}]},
-                            {'component': 'VCol', 'props': {'cols': 12, 'md': 3}, 'content': [{'component': 'VSelect', 'props': {'model': 'tv_window', 'label': '周期', 'items': [{'title': '今日', 'value': 'day'}, {'title': '本周', 'value': 'week'}]}}]},
-                            {'component': 'VCol', 'props': {'cols': 12, 'md': 3}, 'content': [{'component': 'VTextField', 'props': {'model': 'tv_min_vote', 'label': '最低分', 'type': 'number'}}]},
-                            {'component': 'VCol', 'props': {'cols': 12, 'md': 3}, 'content': [{'component': 'VTextField', 'props': {'model': 'tv_count', 'label': '数量', 'type': 'number'}}]}
+                            {'component': 'VCol', 'props': {'cols': 12, 'md': 2}, 'content': [{'component': 'VSwitch', 'props': {'model': 'tv_enabled', 'label': '启用'}}]},
+                            {'component': 'VCol', 'props': {'cols': 12, 'md': 4}, 'content': [{'component': 'VSelect', 'props': {'model': 'tv_source', 'label': '榜单来源', 'items': tv_sources}}]},
+                            {'component': 'VCol', 'props': {'cols': 12, 'md': 2}, 'content': [{'component': 'VTextField', 'props': {'model': 'tv_min_vote', 'label': '最低分', 'type': 'number'}}]},
+                            {'component': 'VCol', 'props': {'cols': 12, 'md': 2}, 'content': [{'component': 'VTextField', 'props': {'model': 'tv_count', 'label': '数量', 'type': 'number'}}]},
+                            {'component': 'VCol', 'props': {'cols': 12, 'md': 2}, 'content': [{'component': 'VTextField', 'props': {'model': 'tv_genre_id', 'label': '分类ID(Discovery必填)', 'placeholder': '如 16'}}]}
                         ]
                     },
                     # 动漫配置
-                    {'component': 'VAlert', 'props': {'type': 'warning', 'text': '动漫订阅配置 (自动筛选日漫)', 'variant': 'tonal', 'class': 'mt-4'}},
+                    {'component': 'VAlert', 'props': {'type': 'warning', 'text': '动漫订阅配置 (独立预设：自动筛选日漫+动画)', 'variant': 'tonal', 'class': 'mt-4'}},
                     {
                         'component': 'VRow',
                         'content': [
-                            {'component': 'VCol', 'props': {'cols': 12, 'md': 3}, 'content': [{'component': 'VSwitch', 'props': {'model': 'anime_enabled', 'label': '启用'}}]},
-                            {'component': 'VCol', 'props': {'cols': 12, 'md': 3}, 'content': [{'component': 'VSelect', 'props': {'model': 'anime_window', 'label': '周期', 'items': [{'title': '今日', 'value': 'day'}, {'title': '本周', 'value': 'week'}]}}]},
+                            {'component': 'VCol', 'props': {'cols': 12, 'md': 2}, 'content': [{'component': 'VSwitch', 'props': {'model': 'anime_enabled', 'label': '启用'}}]},
+                            {'component': 'VCol', 'props': {'cols': 12, 'md': 4}, 'content': [{'component': 'VSelect', 'props': {'model': 'anime_window', 'label': '趋势周期', 'items': [{'title': '今日', 'value': 'day'}, {'title': '本周', 'value': 'week'}]}}]},
                             {'component': 'VCol', 'props': {'cols': 12, 'md': 3}, 'content': [{'component': 'VTextField', 'props': {'model': 'anime_min_vote', 'label': '最低分', 'type': 'number'}}]},
                             {'component': 'VCol', 'props': {'cols': 12, 'md': 3}, 'content': [{'component': 'VTextField', 'props': {'model': 'anime_count', 'label': '数量', 'type': 'number'}}]}
                         ]
@@ -226,14 +242,19 @@ class TmdbTrending(_PluginBase):
             "notify": True,
             "cron": "0 10 * * *",
             "tmdb_api_key": "",
+            # Movie
             "movie_enabled": False,
-            "movie_window": "day",
+            "movie_source": "trending_day",
+            "movie_genre_id": "",
             "movie_min_vote": 7.0,
             "movie_count": 10,
+            # TV
             "tv_enabled": False,
-            "tv_window": "week",
+            "tv_source": "trending_week",
+            "tv_genre_id": "",
             "tv_min_vote": 7.5,
             "tv_count": 10,
+            # Anime
             "anime_enabled": False,
             "anime_window": "week",
             "anime_min_vote": 7.0,
@@ -257,7 +278,7 @@ class TmdbTrending(_PluginBase):
                         'component': 'VCardItem',
                         'content': [
                             {'component': 'VCardTitle', 'text': item.get('title'), 'props': {'class': 'text-body-1 font-weight-bold'}},
-                            {'component': 'VCardSubtitle', 'text': f"{item.get('type')} | {item.get('year')}", 'props': {'class': 'text-caption'}},
+                            {'component': 'VCardSubtitle', 'text': f"{item.get('type')} | {item.get('year')} | {item.get('source_type', '未知来源')}", 'props': {'class': 'text-caption'}},
                         ]
                     },
                     {
@@ -274,72 +295,150 @@ class TmdbTrending(_PluginBase):
         return [{'component': 'div', 'props': {'class': 'grid gap-3 grid-info-card'}, 'content': contents}]
 
     def stop_service(self):
-        """退出插件"""
         pass
 
     def sync_tmdb_trends(self):
-        """核心业务逻辑，由系统调度调用"""
-        logger.info("开始执行 TMDB 趋势订阅任务...")
+        """核心业务逻辑"""
+        logger.info("开始执行 TMDB 榜单订阅任务...")
         added_list = []
         
+        # 1. 处理电影
         if self._movie_enabled:
-            added_list.extend(self.__process_tmdb_type(MediaType.MOVIE, self._movie_window, self._movie_min_vote, self._movie_count, "电影"))
+            added_list.extend(self.__fetch_and_process(
+                media_type=MediaType.MOVIE,
+                source=self._movie_source,
+                genre_id=self._movie_genre_id,
+                min_vote=self._movie_min_vote,
+                limit=self._movie_count,
+                category_label="电影"
+            ))
         
+        # 2. 处理电视剧
         if self._tv_enabled:
-            added_list.extend(self.__process_tmdb_type(MediaType.TV, self._tv_window, self._tv_min_vote, self._tv_count, "电视剧"))
+            added_list.extend(self.__fetch_and_process(
+                media_type=MediaType.TV,
+                source=self._tv_source,
+                genre_id=self._tv_genre_id,
+                min_vote=self._tv_min_vote,
+                limit=self._tv_count,
+                category_label="电视剧"
+            ))
             
+        # 3. 处理动漫 (特殊逻辑)
         if self._anime_enabled:
-            added_list.extend(self.__process_tmdb_type(MediaType.TV, self._anime_window, self._anime_min_vote, self._anime_count, "动漫", is_anime=True))
+            # 动漫本质上使用 TV 的 Trending 接口，但有特殊筛选
+            source = f"trending_{self._anime_window}"
+            added_list.extend(self.__fetch_and_process(
+                media_type=MediaType.TV,
+                source=source,
+                genre_id="", 
+                min_vote=self._anime_min_vote,
+                limit=self._anime_count,
+                category_label="动漫",
+                is_anime_logic=True
+            ))
 
         if self._notify and added_list:
             self.__send_notification(added_list)
         
-        logger.info("TMDB 趋势订阅任务完成。")
+        logger.info("TMDB 榜单订阅任务完成。")
 
-    def __process_tmdb_type(self, media_type: MediaType, window: str, min_vote: float, limit: int, category_name: str, is_anime: bool = False) -> List[dict]:
+    def __fetch_and_process(self, media_type: MediaType, source: str, genre_id: str, min_vote: float, limit: int, category_label: str, is_anime_logic: bool = False) -> List[dict]:
+        """
+        通用获取和处理逻辑
+        """
         api_key = self._tmdb_api_key or settings.TMDB_API_KEY
         if not api_key:
             logger.error("未配置 TMDB API KEY")
             return []
 
+        # 构建 URL
+        base_url = "https://api.themoviedb.org/3"
         type_str = "tv" if media_type == MediaType.TV else "movie"
-        url = f"https://api.themoviedb.org/3/trending/{type_str}/{window}?api_key={api_key}&language=zh-CN"
-        
+        url = ""
+        params = f"api_key={api_key}&language=zh-CN"
+
+        # 根据 Source 解析 URL
+        if source == 'discover':
+            if not genre_id:
+                logger.warning(f"[{category_label}] 选择了按分类发现，但未填写分类ID，跳过")
+                return []
+            url = f"{base_url}/discover/{type_str}?{params}&with_genres={genre_id}&sort_by=popularity.desc"
+        elif source.startswith('trending_'):
+            window = source.split('_')[1] # day or week
+            url = f"{base_url}/trending/{type_str}/{window}?{params}"
+        elif source == 'now_playing':
+            url = f"{base_url}/movie/now_playing?{params}"
+        elif source == 'airing_today':
+            url = f"{base_url}/tv/airing_today?{params}"
+        elif source == 'on_the_air':
+            url = f"{base_url}/tv/on_the_air?{params}"
+        elif source == 'popular':
+            url = f"{base_url}/{type_str}/popular?{params}"
+        elif source == 'top_rated':
+            url = f"{base_url}/{type_str}/top_rated?{params}"
+        else:
+            logger.error(f"未知的榜单来源: {source}")
+            return []
+
         results = []
         page = 1
         
+        # 循环翻页直到满足 limit
         while len(results) < limit and page <= 5:
             try:
-                response = RequestUtils().get_res(f"{url}&page={page}")
+                # 拼接 page 参数
+                req_url = f"{url}&page={page}"
+                response = RequestUtils().get_res(req_url)
                 if not response: break
-                items = response.json().get('results', [])
+                
+                data = response.json()
+                items = data.get('results', [])
                 if not items: break
                 
                 for item in items:
                     if len(results) >= limit: break
+                    
+                    # 评分过滤
                     if item.get('vote_average', 0) < min_vote: continue
                     
-                    if is_anime:
-                        if not (16 in item.get('genre_ids', []) and ('JP' in item.get('origin_country', []) or item.get('original_language', '') == 'ja')):
+                    # 动漫特殊逻辑筛选
+                    if is_anime_logic:
+                        genre_ids = item.get('genre_ids', [])
+                        origin_country = item.get('origin_country', [])
+                        lang = item.get('original_language', '')
+                        # 必须包含动画分类(16) 且 (产地是JP 或 语言是ja)
+                        if not (16 in genre_ids and ('JP' in origin_country or lang == 'ja')):
                             continue
                     
+                    # 提取基础信息
                     tmdb_id = item.get('id')
                     title = item.get('title') if media_type == MediaType.MOVIE else item.get('name')
                     date = item.get('release_date') if media_type == MediaType.MOVIE else item.get('first_air_date')
                     year = date[:4] if date else ""
-                    unique_key = f"{category_name}:{tmdb_id}"
                     
+                    # 去重
+                    unique_key = f"{category_label}:{tmdb_id}"
                     if self.__is_processed(unique_key): continue
                     
-                    if self.__add_subscribe(title, year, media_type, tmdb_id, category_name):
-                        res_item = {'title': title, 'type': category_name, 'vote': item.get('vote_average'), 'tmdb_id': tmdb_id, 'year': year}
+                    # 添加订阅
+                    if self.__add_subscribe(title, year, media_type, tmdb_id, category_label):
+                        res_item = {
+                            'title': title, 
+                            'type': category_label, 
+                            'vote': item.get('vote_average'), 
+                            'tmdb_id': tmdb_id, 
+                            'year': year,
+                            'source_type': source
+                        }
                         results.append(res_item)
-                        self.__save_history(title, category_name, tmdb_id, item.get('vote_average'), unique_key, year)
+                        self.__save_history(title, category_label, tmdb_id, item.get('vote_average'), unique_key, year, source)
                 
                 page += 1
             except Exception as e:
                 logger.error(f"TMDB 请求失败: {e}")
                 break
+        
         return results
 
     def __add_subscribe(self, title, year, mtype, tmdb_id, category_name):
@@ -366,15 +465,21 @@ class TmdbTrending(_PluginBase):
         history = self.get_data('history') or []
         return any(h.get('unique_key') == unique_key for h in history)
 
-    def __save_history(self, title, category, tmdb_id, vote, unique_key, year):
+    def __save_history(self, title, category, tmdb_id, vote, unique_key, year, source):
         history = self.get_data('history') or []
         history.append({
-            'title': title, 'type': category, 'tmdb_id': tmdb_id, 'vote': vote,
-            'unique_key': unique_key, 'year': year, 'time': datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            'title': title, 
+            'type': category, 
+            'tmdb_id': tmdb_id, 
+            'vote': vote,
+            'unique_key': unique_key, 
+            'year': year, 
+            'source_type': source,
+            'time': datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         })
         self.save_data('history', history[-500:])
 
     def __send_notification(self, items):
         if not items: return
         text = "\n".join([f"• [{i['type']}] {i['title']} ({i['vote']}分)" for i in items])
-        self.post_message(mtype=NotificationType.Subscribe, title=f"TMDB 趋势订阅新增 {len(items)} 部", text=text)
+        self.post_message(mtype=NotificationType.Subscribe, title=f"TMDB 订阅新增 {len(items)} 部", text=text)
