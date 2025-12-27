@@ -30,7 +30,7 @@ class DoubanRank(_PluginBase):
     plugin_name = "豆瓣榜单订阅增强版（自用）"
     plugin_desc = "监控豆瓣热门榜单，自动添加订阅。"
     plugin_icon = "movie.jpg"
-    plugin_version = "2.0.4"
+    plugin_version = "2.0.5"
     plugin_author = "outxool"
     plugin_author_url = ""
     plugin_config_prefix = "doubanrank_"
@@ -54,23 +54,24 @@ class DoubanRank(_PluginBase):
     
     # 配置项
     _enabled = False
-    _cron = ""
+    _cron = "0 8 * * *"
     _onlyonce = False
     _rss_addrs = []
     _ranks = []
     _vote = 0
     _clear = False
     _proxy = False
-    _rsshub = "https://rsshub.app"
+    # 默认使用镜像地址，因为容器无代理通常无法访问 rsshub.app
+    _rsshub = "https://rsshub.rssforever.com"
 
     def init_plugin(self, config: dict = None):
         if config:
             self._enabled = config.get("enabled", False)
-            self._cron = config.get("cron", "")
+            self._cron = config.get("cron", "0 8 * * *")
             self._proxy = config.get("proxy", False)
             self._onlyonce = config.get("onlyonce", False)
             self._vote = float(config.get("vote") or 0)
-            self._rsshub = config.get("rsshub") or "https://rsshub.app"
+            self._rsshub = config.get("rsshub") or "https://rsshub.rssforever.com"
             
             rss_addrs = config.get("rss_addrs")
             if rss_addrs:
@@ -91,12 +92,6 @@ class DoubanRank(_PluginBase):
             if self._enabled and self._cron:
                 self._scheduler = BackgroundScheduler(timezone=settings.TZ)
                 self._scheduler.add_job(func=self.__refresh_rss, trigger=CronTrigger.from_crontab(self._cron), name="豆瓣榜单订阅")
-                if self._scheduler.get_jobs():
-                    self._scheduler.start()
-            elif self._enabled:
-                # 默认每天8点
-                self._scheduler = BackgroundScheduler(timezone=settings.TZ)
-                self._scheduler.add_job(func=self.__refresh_rss, trigger=CronTrigger.from_crontab("0 8 * * *"), name="豆瓣榜单订阅")
                 if self._scheduler.get_jobs():
                     self._scheduler.start()
 
@@ -153,14 +148,6 @@ class DoubanRank(_PluginBase):
                 "func": self.__refresh_rss,
                 "kwargs": {}
             }]
-        elif self._enabled:
-            return [{
-                "id": "DoubanRank",
-                "name": "豆瓣榜单订阅服务",
-                "trigger": CronTrigger.from_crontab("0 8 * * *"),
-                "func": self.__refresh_rss,
-                "kwargs": {}
-            }]
         return []
 
     def get_form(self) -> Tuple[List[dict], Dict[str, Any]]:
@@ -181,7 +168,7 @@ class DoubanRank(_PluginBase):
                         'content': [
                             {'component': 'VCol', 'props': {'cols': 12, 'md': 4}, 'content': [{'component': 'VCronField', 'props': {'model': 'cron', 'label': '执行周期', 'placeholder': '5位cron表达式'}}]},
                             {'component': 'VCol', 'props': {'cols': 12, 'md': 4}, 'content': [{'component': 'VTextField', 'props': {'model': 'vote', 'label': '评分', 'placeholder': '评分大于等于该值才订阅'}}]},
-                            {'component': 'VCol', 'props': {'cols': 12, 'md': 4}, 'content': [{'component': 'VTextField', 'props': {'model': 'rsshub', 'label': 'RSSHub地址', 'placeholder': 'https://rsshub.app'}}]}
+                            {'component': 'VCol', 'props': {'cols': 12, 'md': 4}, 'content': [{'component': 'VTextField', 'props': {'model': 'rsshub', 'label': 'RSSHub地址', 'placeholder': 'https://rsshub.rssforever.com'}}]}
                         ]
                     },
                     {
@@ -214,8 +201,8 @@ class DoubanRank(_PluginBase):
                 ]
             }
         ], {
-            "enabled": False, "cron": "", "proxy": False, "onlyonce": False, "vote": "", 
-            "rsshub": "https://rsshub.app", "ranks": [], "rss_addrs": "", "clear": False
+            "enabled": False, "cron": "0 8 * * *", "proxy": False, "onlyonce": False, "vote": "", 
+            "rsshub": "https://rsshub.rssforever.com", "ranks": [], "rss_addrs": "", "clear": False
         }
 
     def get_page(self) -> List[dict]:
@@ -223,14 +210,13 @@ class DoubanRank(_PluginBase):
         if not historys:
             return [{'component': 'div', 'text': '暂无数据', 'props': {'class': 'text-center'}}]
         
-        historys = sorted(historys, key=lambda x: x.get('time'), reverse=True)[:50]
+        historys = sorted(historys, key=lambda x: x.get('time'), reverse=True)
         contents = []
         for history in historys:
             title = history.get("title")
             doubanid = history.get("doubanid")
             contents.append({
                 'component': 'VCard',
-                'props': {'class': 'mx-auto mb-2', 'width': '100%'},
                 'content': [
                     {
                         "component": "VDialogCloseBtn",
@@ -280,10 +266,17 @@ class DoubanRank(_PluginBase):
         return {"success": True, "message": "删除成功"}
 
     def __update_config(self):
+        # 全量保存配置，防止数据丢失
         self.update_config({
-            "enabled": self._enabled, "cron": self._cron, "onlyonce": self._onlyonce,
-            "vote": self._vote, "rsshub": self._rsshub, "ranks": self._ranks,
-            "rss_addrs": '\n'.join(map(str, self._rss_addrs)), "clear": self._clear, "proxy": self._proxy
+            "enabled": self._enabled, 
+            "cron": self._cron, 
+            "onlyonce": self._onlyonce,
+            "vote": self._vote, 
+            "rsshub": self._rsshub, 
+            "ranks": self._ranks,
+            "rss_addrs": '\n'.join(map(str, self._rss_addrs)), 
+            "clear": self._clear, 
+            "proxy": self._proxy
         })
 
     def __refresh_rss(self):
