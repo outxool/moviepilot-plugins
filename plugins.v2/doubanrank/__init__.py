@@ -1,5 +1,5 @@
 # 强制打印日志
-print("加载 DoubanRank 插件模块 (v3.1.1)...")
+print("加载 DoubanRank 插件模块 (v3.1.2)...")
 
 import datetime
 import json
@@ -34,7 +34,7 @@ class DoubanRank(_PluginBase):
     plugin_name = "豆瓣榜单订阅增强版（自用）"
     plugin_desc = "直接抓取豆瓣官网数据，支持电影/剧集/综艺分类订阅，支持多榜单、评分年份过滤及智能去重。"
     plugin_icon = "https://img3.doubanio.com/favicon.ico"
-    plugin_version = "3.1.1"
+    plugin_version = "3.1.2"
     plugin_author = "outxool"
     plugin_config_prefix = "doubanrank_"
     plugin_order = 6
@@ -107,7 +107,7 @@ class DoubanRank(_PluginBase):
     _show_count = 10
 
     def init_plugin(self, config: dict = None):
-        logger.info("正在初始化豆瓣榜单订阅插件 (v3.1.1)...")
+        logger.info("正在初始化豆瓣榜单订阅插件 (v3.1.2)...")
         self.subscribechain = SubscribeChain()
         self.downloadchain = DownloadChain()
         self.mediachain = MediaChain()
@@ -237,20 +237,14 @@ class DoubanRank(_PluginBase):
                         'component': 'VRow',
                         'content': [
                             {'component': 'VCol', 'props': {'cols': 12, 'md': 4}, 'content': [{'component': 'VCronField', 'props': {'model': 'cron', 'label': '执行周期', 'placeholder': '5位cron表达式'}}]},
-                            {'component': 'VCol', 'props': {'cols': 12, 'md': 4}, 'content': [{'component': 'VTextField', 'props': {'model': 'vote', 'label': '评分', 'placeholder': '评分大于等于该值才订阅'}}]},
+                            {'component': 'VCol', 'props': {'cols': 12, 'md': 4}, 'content': [{'component': 'VTextField', 'props': {'model': 'vote', 'label': '最低评分(旧版兼容)', 'placeholder': '不再使用，请在下方分项配置'}}]},
                             {'component': 'VCol', 'props': {'cols': 12, 'md': 4}, 'content': [{'component': 'VSwitch', 'props': {'model': 'onlyonce', 'label': '立即运行一次'}}]}
                         ]
                     },
                     {
                         'component': 'VRow',
                         'content': [
-                            {'component': 'VCol', 'content': [{'component': 'VSelect', 'props': {'chips': True, 'multiple': True, 'model': 'ranks', 'label': '选择订阅榜单', 'items': [
-                                {'title': '热门电影 (Hot Movies)', 'value': 'movie_hot'},
-                                {'title': '热门电视剧 (Hot TV)', 'value': 'tv_hot'},
-                                {'title': '热门综艺 (Hot Variety)', 'value': 'show_hot'},
-                                {'title': '电影Top250 (前25名)', 'value': 'movie_top250'},
-                                {'title': '一周口碑电影榜', 'value': 'movie_weekly'},
-                            ]}}]}
+                            {'component': 'VCol', 'content': [{'component': 'VSelect', 'props': {'chips': True, 'multiple': True, 'model': 'ranks', 'label': '旧版榜单(不再使用)', 'items': []}}]}
                         ]
                     },
                     {
@@ -347,16 +341,7 @@ class DoubanRank(_PluginBase):
         return [{'component': 'div', 'props': {'class': 'grid gap-3 grid-info-card'}, 'content': contents}]
 
     def stop_service(self):
-        try:
-            if self._scheduler:
-                self._scheduler.remove_all_jobs()
-                if self._scheduler.running:
-                    self._event.set()
-                    self._scheduler.shutdown()
-                    self._event.clear()
-                self._scheduler = None
-        except Exception as e:
-            logger.error(str(e))
+        pass
 
     def delete_history(self, key: str, apikey: str):
         if apikey != settings.API_TOKEN:
@@ -418,7 +403,6 @@ class DoubanRank(_PluginBase):
                         
                         title = item.get('title')
                         douban_id = item.get('id')
-                        # 修复：安全转换评分，处理 '8.7' -> 8.7
                         try:
                             vote = float(item.get('rate') or 0)
                         except ValueError:
@@ -427,25 +411,28 @@ class DoubanRank(_PluginBase):
                         year = item.get('year')
                         
                         # 1. 评分过滤
-                        if task['min_vote'] > 0 and vote < task['min_vote']: continue
+                        if task['min_vote'] > 0 and vote < task['min_vote']: 
+                            logger.info(f"跳过 {title}: 评分 {vote} 低于 {task['min_vote']}")
+                            continue
                         
-                        # 2. 年份过滤 (修复 '<' not supported bug)
+                        # 2. 年份过滤
                         if year and task['min_year'] > 0:
                             try:
-                                # 尝试从字符串中提取数字年份 '2025' -> 2025
                                 year_int = int(re.findall(r'\d{4}', str(year))[0])
-                                if year_int < task['min_year']: continue
-                            except (ValueError, IndexError):
-                                # 解析失败则跳过年份过滤
-                                pass
+                                if year_int < task['min_year']: 
+                                    logger.info(f"跳过 {title}: 年份 {year_int} 早于 {task['min_year']}")
+                                    continue
+                            except (ValueError, IndexError): pass
 
                         # 3. 插件历史去重
                         unique_flag = f"doubanrank: {title} (DB:{douban_id})"
-                        if any(h.get('unique') == unique_flag for h in history): continue
+                        if any(h.get('unique') == unique_flag for h in history): 
+                            logger.info(f"跳过 {title}: 历史记录中已存在")
+                            continue
                         
                         # 4. 识别与入库
                         meta = MetaInfo(title)
-                        if year: meta.year = str(year) # 确保meta.year是字符串
+                        if year: meta.year = str(year)
                         meta.type = MediaType.MOVIE if task['cat'] == '电影' else MediaType.TV
                         
                         mediainfo = self.__recognize_media(meta, douban_id)
@@ -456,11 +443,15 @@ class DoubanRank(_PluginBase):
                         # 5. 精确年份过滤 (识别后)
                         if task['min_year'] > 0 and mediainfo.year:
                             try:
-                                if int(mediainfo.year) < task['min_year']: continue
+                                if int(mediainfo.year) < task['min_year']: 
+                                    logger.info(f"跳过 {title}: 识别后年份 {mediainfo.year} 早于 {task['min_year']}")
+                                    continue
                             except: pass
 
                         # 6. 核心去重
-                        if self.__check_exists(mediainfo, meta): continue
+                        if self.__check_exists(mediainfo, meta): 
+                            logger.info(f"跳过 {title}: 媒体库或订阅列表中已存在")
+                            continue
                         
                         # 7. 添加订阅
                         if self.__add_subscribe(mediainfo, meta, douban_id, rank_conf['name']):
@@ -499,7 +490,6 @@ class DoubanRank(_PluginBase):
         return mediainfo
 
     def __check_exists(self, mediainfo: MediaInfo, meta: MetaInfo) -> bool:
-        """检查是否存在（媒体库+订阅）"""
         exist_flag, _ = self.downloadchain.get_no_exists_info(meta=meta, mediainfo=mediainfo)
         if exist_flag: return True
         if self.subscribechain.exists(mediainfo=mediainfo, meta=meta): return True
@@ -546,7 +536,7 @@ class DoubanRank(_PluginBase):
                             'title': sub.get('title'),
                             'rate': sub.get('rate'),
                             'id': sub.get('id'),
-                            'year': None # API不含年份，依靠后续识别
+                            'year': None
                         })
                 except Exception: logger.error("API解析失败")
             
